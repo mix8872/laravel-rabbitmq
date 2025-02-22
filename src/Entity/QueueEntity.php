@@ -351,7 +351,7 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
      */
     protected function shouldStopConsuming(): bool
     {
-        if ((microtime(true) - $this->startTime) > $this->limitSecondsUptime) {
+        if ($this->limitSecondsUptime >0 && (microtime(true) - $this->startTime) > $this->limitSecondsUptime) {
             $this->logger->debug(
                 "Stopped consumer",
                 [
@@ -372,7 +372,7 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
             return true;
         }
 
-        if ($this->getMessageProcessor()->getProcessedMessages() >= $this->limitMessageCount) {
+        if ($this->limitMessageCount > 0 && $this->getMessageProcessor()->getProcessedMessages() >= $this->limitMessageCount) {
             $this->logger->debug(
                 "Stopped consumer",
                 ['limit' => 'message_count', 'value' => (int)$this->getMessageProcessor()->getProcessedMessages()]
