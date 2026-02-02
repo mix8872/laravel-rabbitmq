@@ -115,6 +115,11 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
     protected $globalPrefetch = true;
 
     /**
+     * @var float Timeout in seconds between retry attempts (default: 0.001 = 1ms)
+     */
+    protected $retryTimeout = 0.001;
+
+    /**
      * @param AMQPConnection $connection
      * @param string $aliasName
      * @param array $queueDetails
@@ -179,6 +184,18 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
     {
         $this->globalPrefetch = $globalPrefetch;
 
+        return $this;
+    }
+
+    /**
+     * Set timeout between retry attempts in seconds
+     *
+     * @param float $timeout Timeout in seconds (1.0 = 1 second, 0.1 = 100ms)
+     * @return ConsumerInterface
+     */
+    public function setRetryTimeout(float $timeout): ConsumerInterface
+    {
+        $this->retryTimeout = $timeout;
         return $this;
     }
 
@@ -328,7 +345,8 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                 if ($this->shouldStopConsuming()) {
                     break;
                 }
-                usleep(1000);
+                // Convert seconds to microseconds for usleep
+                usleep((int)($this->retryTimeout * 1000000));
                 $this->getConnection()->reconnect();
                 $this->setupChannelConsumer();
             } catch (\Throwable $e) {
