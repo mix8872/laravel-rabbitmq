@@ -717,8 +717,8 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
      */
     public function consume(AMQPMessage $message)
     {
-        // Get routing info from delivery info
-        $deliveryInfo = $message->getDeliveryInfo();
+        // Get routing info from delivery info (property, not method in this PhpAmqpLib version)
+        $deliveryInfo = $message->delivery_info ?? [];
         $routingKey = $deliveryInfo['routing_key'] ?? 'unknown';
         $exchange = $deliveryInfo['exchange'] ?? 'unknown';
         $from = $exchange . ':' . $routingKey;
