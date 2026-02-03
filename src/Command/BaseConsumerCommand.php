@@ -4,10 +4,12 @@ namespace NeedleProject\LaravelRabbitMq\Command;
 // Helper function for guaranteed console output (global namespace)
 if (!function_exists('rmq_log')) {
     function rmq_log(string $message) {
-        // Use both error_log and fwrite for guaranteed console output
-        error_log($message);
+        // Use fwrite to stderr for guaranteed console output
         if (defined('STDERR') && is_resource(STDERR)) {
             @fwrite(STDERR, $message . PHP_EOL);
+        } else {
+            // Fallback to error_log if STDERR is not available
+            error_log($message);
         }
     }
 }
@@ -34,7 +36,7 @@ class BaseConsumerCommand extends Command
      *
      * @var string
      */
-    protected $signature = 'rabbitmq:consume {consumer} {--time=60} {--messages=100} {--memory=64}';
+    protected $signature = 'rabbitmq:consume {consumer} {--time=60} {--messages=100} {--memory=128}';
 
     /**
      * The console command description.
@@ -55,12 +57,12 @@ class BaseConsumerCommand extends Command
     public function handle()
     {
         rmq_log("[RMQ BaseConsumerCommand] handle() called");
-        
+
         $messageCount = (int)$this->input->getOption('messages');
         $waitTime = (int)$this->input->getOption('time');
         $memoryLimit = (int)$this->input->getOption('memory');
         $consumerName = $this->input->getArgument('consumer');
-        
+
         rmq_log(sprintf(
             "[RMQ BaseConsumerCommand] Parameters parsed: consumer=%s, messages=%s, time=%s, memory=%sMB",
             $consumerName,
@@ -68,7 +70,7 @@ class BaseConsumerCommand extends Command
             $waitTime,
             $memoryLimit
         ));
-        
+
         $isVerbose = in_array(
             $this->output->getVerbosity(),
             [OutputInterface::VERBOSITY_VERBOSE, OutputInterface::VERBOSITY_VERY_VERBOSE]
@@ -85,7 +87,7 @@ class BaseConsumerCommand extends Command
             $consumer = $this->getConsumer($consumerName);
             rmq_log(sprintf("[RMQ BaseConsumerCommand] Consumer created: %s", get_class($consumer)));
             $this->info("Consumer created successfully");
-            
+
             if ($consumer instanceof LoggerAwareInterface && $isVerbose) {
                 rmq_log("[RMQ BaseConsumerCommand] Attempting to inject CLI logger...");
                 try {
@@ -102,10 +104,10 @@ class BaseConsumerCommand extends Command
                     $isVerbose ? 'true' : 'false'
                 ));
             }
-            
+
             $this->info("Starting to consume messages...");
             rmq_log("[RMQ BaseConsumerCommand] Calling startConsuming()...");
-            
+
             // Add debug output if consumer supports reflection
             if ($consumer instanceof LoggerAwareInterface) {
                 try {
@@ -117,7 +119,7 @@ class BaseConsumerCommand extends Command
                         $shouldStop = $method->invoke($consumer);
                         rmq_log(sprintf("[RMQ BaseConsumerCommand] Reflection: shouldStopConsuming() = %s", $shouldStop ? 'true' : 'false'));
                         $this->line("DEBUG: First shouldStopConsuming() check = " . ($shouldStop ? 'true (WILL STOP)' : 'false (WILL CONTINUE)'));
-                        
+
                         // Try to get limit values
                         if ($reflection->hasProperty('limitMessageCount')) {
                             $prop = $reflection->getProperty('limitMessageCount');
@@ -146,7 +148,7 @@ class BaseConsumerCommand extends Command
                     $this->line("DEBUG: Could not inspect consumer: " . $e->getMessage());
                 }
             }
-            
+
             $result = $consumer->startConsuming($messageCount, $waitTime, $memoryLimit);
             rmq_log(sprintf("[RMQ BaseConsumerCommand] startConsuming() returned: %s", $result));
             $this->info("Consumer finished with code: {$result}");
@@ -160,7 +162,7 @@ class BaseConsumerCommand extends Command
                 $e->getLine()
             ));
             rmq_log(sprintf("[RMQ BaseConsumerCommand] Stack trace: %s", $e->getTraceAsString()));
-            
+
             $this->error("Error in consumer: " . $e->getMessage());
             $this->error("File: " . $e->getFile() . ":" . $e->getLine());
             if ($this->output->isVerbose()) {

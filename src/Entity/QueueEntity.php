@@ -5,10 +5,12 @@ namespace NeedleProject\LaravelRabbitMq\Entity;
 // Helper function for guaranteed console output (global namespace)
 if (!function_exists('rmq_log')) {
     function rmq_log(string $message) {
-        // Use both error_log and fwrite for guaranteed console output
-        error_log($message);
+        // Use fwrite to stderr for guaranteed console output
         if (defined('STDERR') && is_resource(STDERR)) {
             @fwrite(STDERR, $message . PHP_EOL);
+        } else {
+            // Fallback to error_log if STDERR is not available
+            error_log($message);
         }
     }
 }
@@ -115,6 +117,11 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
      * @var double
      */
     protected $startTime = 0;
+
+    /**
+     * @var int Memory usage at start (for calculating memory growth)
+     */
+    protected $startMemory = 0;
 
     /**
      * @var int
@@ -575,29 +582,44 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
             return true;
         }
         
-        // Check memory limit
-        $currentMemory = memory_get_peak_usage(true);
-        $memoryLimit = $this->limitMemoryConsumption * 1048576;
-        $memoryCheck = $currentMemory >= $memoryLimit;
-        rmq_log(sprintf(
-            "[RMQ DEBUG shouldStopConsuming] Memory check: currentMemory=%d bytes (%.2f MB), memoryLimit=%d bytes (%.2f MB), result = %s",
-            $currentMemory,
-            $currentMemory / 1048576,
-            $memoryLimit,
-            $memoryLimit / 1048576,
-            $memoryCheck ? 'STOP' : 'CONTINUE'
-        ));
-        if ($memoryCheck) {
-            rmq_log("[RMQ DEBUG shouldStopConsuming] RETURNING TRUE: memory limit reached");
-            if ($this->logger) {
-                $this->logger->debug("shouldStopConsuming: memory limit reached", [
-                    'queue' => $this->attributes['name'],
-                    'limitMemoryConsumption' => $this->limitMemoryConsumption,
-                    'currentMemory' => (int)round($currentMemory / 1048576, 2),
-                    'memoryLimit' => (int)round($memoryLimit / 1048576, 2)
-                ]);
+        // Check memory limit (only if limit is set and > 0)
+        // Check memory growth from start, not absolute value
+        if ($this->limitMemoryConsumption > 0) {
+            $currentMemory = memory_get_usage(true);
+            $memoryGrowth = $this->startMemory > 0 ? ($currentMemory - $this->startMemory) : $currentMemory;
+            $memoryLimit = $this->limitMemoryConsumption * 1048576;
+            // Check if memory growth exceeds limit, not absolute memory
+            $memoryCheck = $memoryGrowth >= $memoryLimit;
+            rmq_log(sprintf(
+                "[RMQ DEBUG shouldStopConsuming] Memory check: startMemory=%d bytes (%.2f MB), currentMemory=%d bytes (%.2f MB), memoryGrowth=%d bytes (%.2f MB), memoryLimit=%d bytes (%.2f MB), result = %s",
+                $this->startMemory,
+                $this->startMemory / 1048576,
+                $currentMemory,
+                $currentMemory / 1048576,
+                $memoryGrowth,
+                $memoryGrowth / 1048576,
+                $memoryLimit,
+                $memoryLimit / 1048576,
+                $memoryCheck ? 'STOP' : 'CONTINUE'
+            ));
+            if ($memoryCheck) {
+                rmq_log("[RMQ DEBUG shouldStopConsuming] RETURNING TRUE: memory limit reached");
+                if ($this->logger) {
+                    $this->logger->debug("shouldStopConsuming: memory limit reached", [
+                        'queue' => $this->attributes['name'],
+                        'limitMemoryConsumption' => $this->limitMemoryConsumption,
+                        'currentMemory' => (int)round($currentMemory / 1048576, 2),
+                        'memoryGrowth' => (int)round($memoryGrowth / 1048576, 2),
+                        'memoryLimit' => (int)round($memoryLimit / 1048576, 2)
+                    ]);
+                }
+                return true;
             }
-            return true;
+        } else {
+            rmq_log(sprintf(
+                "[RMQ DEBUG shouldStopConsuming] Skipping memory check: limitMemoryConsumption=%s (not > 0)",
+                $this->limitMemoryConsumption
+            ));
         }
 
         // Check message count limit
@@ -693,6 +715,7 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
             $this->limitMemoryConsumption = $maxMemory;
 
             $this->startTime = microtime(true);
+            $this->startMemory = memory_get_usage(true);
 
             if ($this->logger) {
                 $this->logger->debug("Limits set", [
