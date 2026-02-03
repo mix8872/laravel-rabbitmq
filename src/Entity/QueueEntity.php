@@ -356,10 +356,10 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
     public function startConsuming(int $messages, int $seconds, int $maxMemory)
     {
         rmq_log(sprintf(
-            "[RMQ startConsuming] ENTRY: queue=%s, messages=%s, seconds=%s, maxMemory=%sMB",
+            "[RMQ] Starting consumer: queue=%s, messages=%s, time=%s, memory=%sMB",
             $this->attributes['name'],
-            $messages,
-            $seconds,
+            $messages < 0 ? 'unlimited' : $messages,
+            $seconds < 0 ? 'unlimited' : $seconds . 's',
             $maxMemory
         ));
         
@@ -372,17 +372,7 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
             ]);
         }
         
-        rmq_log("[RMQ startConsuming] Calling setupConsumer()...");
         $this->setupConsumer($messages, $seconds, $maxMemory);
-        rmq_log("[RMQ startConsuming] setupConsumer() completed");
-        
-        rmq_log(sprintf(
-            "[RMQ startConsuming] After setupConsumer: limitMessageCount=%s, limitSecondsUptime=%s, limitMemoryConsumption=%s, startTime=%s",
-            $this->limitMessageCount,
-            $this->limitSecondsUptime,
-            $this->limitMemoryConsumption,
-            $this->startTime
-        ));
         
         if ($this->logger) {
             $this->logger->info("setupConsumer completed, entering main loop", [
@@ -394,95 +384,25 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
         }
         
         // Check shouldStopConsuming before entering loop
-        rmq_log("[RMQ startConsuming] Checking shouldStopConsuming() before loop...");
         $shouldStop = $this->shouldStopConsuming();
         
-        rmq_log(sprintf(
-            "[RMQ startConsuming] First shouldStopConsuming check: shouldStop=%s, limitMessageCount=%s, limitSecondsUptime=%s, limitMemoryConsumption=%s, startTime=%s",
-            $shouldStop ? 'true' : 'false',
-            $this->limitMessageCount,
-            $this->limitSecondsUptime,
-            $this->limitMemoryConsumption,
-            $this->startTime
-        ));
-        
-        if ($this->logger) {
-            $this->logger->info("First shouldStopConsuming check", [
-                'queue' => $this->attributes['name'],
-                'shouldStop' => $shouldStop,
-                'limitMessageCount' => $this->limitMessageCount,
-                'limitSecondsUptime' => $this->limitSecondsUptime,
-                'limitMemoryConsumption' => $this->limitMemoryConsumption,
-                'startTime' => $this->startTime
-            ]);
-        }
-        
         if ($shouldStop) {
-            rmq_log("[RMQ startConsuming] shouldStopConsuming returned true immediately, exiting loop without entering");
+            rmq_log(sprintf("[RMQ] Consumer stopped before entering loop: queue=%s", $this->attributes['name']));
             if ($this->logger) {
                 $this->logger->warning("shouldStopConsuming returned true before entering loop", [
                     'queue' => $this->attributes['name']
                 ]);
             }
-            rmq_log("[RMQ startConsuming] EXIT: returning 0 (shouldStop=true)");
             return 0;
         }
         
-        rmq_log("[RMQ startConsuming] Entering main while loop...");
-        $loopIteration = 0;
-        
         while (false === $this->shouldStopConsuming()) {
-            $loopIteration++;
-            rmq_log(sprintf("[RMQ startConsuming] Loop iteration #%d", $loopIteration));
-            
             try {
-                rmq_log(sprintf(
-                    "[RMQ startConsuming] Calling wait() with seconds=%s",
-                    $seconds
-                ));
-                
-                if ($this->logger) {
-                    $this->logger->debug("Calling wait()", [
-                        'queue' => $this->attributes['name'],
-                        'seconds' => $seconds
-                    ]);
-                }
-                
                 $this->getChannel()->wait(null, false, $seconds);
-                
-                rmq_log("[RMQ startConsuming] wait() returned normally");
-                
-                if ($this->logger) {
-                    $this->logger->debug("wait() returned", [
-                        'queue' => $this->attributes['name']
-                    ]);
-                }
             } catch (AMQPTimeoutException $e) {
-                rmq_log(sprintf(
-                    "[RMQ startConsuming] AMQPTimeoutException caught: %s",
-                    $e->getMessage()
-                ));
-                
-                if ($this->logger) {
-                    $this->logger->debug("AMQPTimeoutException caught", [
-                        'queue' => $this->attributes['name'],
-                        'message' => $e->getMessage()
-                    ]);
-                }
-                
-                rmq_log("[RMQ startConsuming] Checking shouldStopConsuming() after timeout...");
                 if ($this->shouldStopConsuming()) {
-                    rmq_log("[RMQ startConsuming] shouldStopConsuming returned true after timeout, breaking loop");
-                    if ($this->logger) {
-                        $this->logger->info("shouldStopConsuming returned true, breaking loop");
-                    }
                     break;
                 }
-                
-                rmq_log(sprintf(
-                    "[RMQ startConsuming] Reconnecting after timeout, retry_timeout=%.3f seconds",
-                    $this->retryTimeout
-                ));
                 
                 if ($this->logger) {
                     $this->logger->debug("Reconnecting after timeout", [
@@ -493,22 +413,16 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                 
                 // Convert seconds to microseconds for usleep
                 usleep((int)($this->retryTimeout * 1000000));
-                rmq_log("[RMQ startConsuming] Calling reconnect()...");
                 $this->getConnection()->reconnect();
-                rmq_log("[RMQ startConsuming] Calling setupChannelConsumer()...");
                 $this->setupChannelConsumer();
-                rmq_log("[RMQ startConsuming] Reconnection completed");
             } catch (\Throwable $e) {
-                rmq_log(sprintf(
-                    "[RMQ startConsuming] EXCEPTION in loop: %s - %s in %s:%d",
-                    get_class($e),
-                    $e->getMessage(),
-                    $e->getFile(),
-                    $e->getLine()
-                ));
-                rmq_log(sprintf("[RMQ startConsuming] Stack trace: %s", $e->getTraceAsString()));
-                
                 // stop the consumer
+                rmq_log(sprintf(
+                    "[RMQ] ERROR in consumer loop: %s - %s",
+                    get_class($e),
+                    $e->getMessage()
+                ));
+                
                 if ($this->logger) {
                     $this->logger->error("Exception in consumer loop", [
                         'queue' => $this->attributes['name'],
@@ -520,7 +434,6 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                     ]);
                 }
                 
-                rmq_log("[RMQ startConsuming] Stopping consumer due to exception...");
                 $this->stopConsuming();
                 $this->logger->notice(sprintf(
                     "Stopped consuming: %s in %s:%d",
@@ -528,13 +441,11 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                     (string)$e->getFile(),
                     (int)$e->getLine()
                 ));
-                rmq_log("[RMQ startConsuming] EXIT: returning 1 (exception)");
                 return 1;
             }
         }
         
-        rmq_log(sprintf("[RMQ startConsuming] Loop exited after %d iterations", $loopIteration));
-        rmq_log("[RMQ startConsuming] EXIT: returning 0 (normal exit)");
+        rmq_log(sprintf("[RMQ] Consumer finished: queue=%s", $this->attributes['name']));
         
         if ($this->logger) {
             $this->logger->info("Consumer loop finished", [
@@ -553,25 +464,8 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
         $currentTime = microtime(true);
         $elapsedTime = $this->startTime > 0 ? ($currentTime - $this->startTime) : 0;
         
-        // Always log via error_log for debugging
-        rmq_log(sprintf(
-            "[RMQ DEBUG shouldStopConsuming] Starting check: limitSecondsUptime=%s, limitMessageCount=%s, limitMemoryConsumption=%s, elapsedTime=%.4f",
-            $this->limitSecondsUptime,
-            $this->limitMessageCount,
-            $this->limitMemoryConsumption,
-            $elapsedTime
-        ));
-        
         // Check time limit
-        $timeCheck = $this->limitSecondsUptime > 0 && $elapsedTime > $this->limitSecondsUptime;
-        rmq_log(sprintf(
-            "[RMQ DEBUG shouldStopConsuming] Time check: limitSecondsUptime > 0 = %s, elapsedTime > limit = %s, result = %s",
-            ($this->limitSecondsUptime > 0) ? 'true' : 'false',
-            ($elapsedTime > $this->limitSecondsUptime) ? 'true' : 'false',
-            $timeCheck ? 'STOP' : 'CONTINUE'
-        ));
-        if ($timeCheck) {
-            rmq_log("[RMQ DEBUG shouldStopConsuming] RETURNING TRUE: time limit reached");
+        if ($this->limitSecondsUptime > 0 && $elapsedTime > $this->limitSecondsUptime) {
             if ($this->logger) {
                 $this->logger->debug("shouldStopConsuming: time limit reached", [
                     'queue' => $this->attributes['name'],
@@ -589,21 +483,7 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
             $memoryGrowth = $this->startMemory > 0 ? ($currentMemory - $this->startMemory) : $currentMemory;
             $memoryLimit = $this->limitMemoryConsumption * 1048576;
             // Check if memory growth exceeds limit, not absolute memory
-            $memoryCheck = $memoryGrowth >= $memoryLimit;
-            rmq_log(sprintf(
-                "[RMQ DEBUG shouldStopConsuming] Memory check: startMemory=%d bytes (%.2f MB), currentMemory=%d bytes (%.2f MB), memoryGrowth=%d bytes (%.2f MB), memoryLimit=%d bytes (%.2f MB), result = %s",
-                $this->startMemory,
-                $this->startMemory / 1048576,
-                $currentMemory,
-                $currentMemory / 1048576,
-                $memoryGrowth,
-                $memoryGrowth / 1048576,
-                $memoryLimit,
-                $memoryLimit / 1048576,
-                $memoryCheck ? 'STOP' : 'CONTINUE'
-            ));
-            if ($memoryCheck) {
-                rmq_log("[RMQ DEBUG shouldStopConsuming] RETURNING TRUE: memory limit reached");
+            if ($memoryGrowth >= $memoryLimit) {
                 if ($this->logger) {
                     $this->logger->debug("shouldStopConsuming: memory limit reached", [
                         'queue' => $this->attributes['name'],
@@ -615,30 +495,13 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                 }
                 return true;
             }
-        } else {
-            rmq_log(sprintf(
-                "[RMQ DEBUG shouldStopConsuming] Skipping memory check: limitMemoryConsumption=%s (not > 0)",
-                $this->limitMemoryConsumption
-            ));
         }
 
         // Check message count limit
         if ($this->limitMessageCount > 0) {
-            rmq_log(sprintf(
-                "[RMQ DEBUG shouldStopConsuming] Checking message count: limitMessageCount=%s > 0",
-                $this->limitMessageCount
-            ));
             try {
                 $processedMessages = $this->getMessageProcessor()->getProcessedMessages();
-                $messageCheck = $processedMessages >= $this->limitMessageCount;
-                rmq_log(sprintf(
-                    "[RMQ DEBUG shouldStopConsuming] Message check: processedMessages=%s, limitMessageCount=%s, result = %s",
-                    $processedMessages,
-                    $this->limitMessageCount,
-                    $messageCheck ? 'STOP' : 'CONTINUE'
-                ));
-                if ($messageCheck) {
-                    rmq_log("[RMQ DEBUG shouldStopConsuming] RETURNING TRUE: message count limit reached");
+                if ($processedMessages >= $this->limitMessageCount) {
                     if ($this->logger) {
                         $this->logger->debug("shouldStopConsuming: message count limit reached", [
                             'queue' => $this->attributes['name'],
@@ -649,11 +512,6 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                     return true;
                 }
             } catch (\Throwable $e) {
-                rmq_log(sprintf(
-                    "[RMQ DEBUG shouldStopConsuming] ERROR in getMessageProcessor(): %s - %s",
-                    get_class($e),
-                    $e->getMessage()
-                ));
                 if ($this->logger) {
                     $this->logger->error("Error getting processed messages count", [
                         'queue' => $this->attributes['name'],
@@ -662,18 +520,6 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                     ]);
                 }
             }
-        } else {
-            rmq_log(sprintf(
-                "[RMQ DEBUG shouldStopConsuming] Skipping message count check: limitMessageCount=%s (not > 0)",
-                $this->limitMessageCount
-            ));
-        }
-        
-        rmq_log("[RMQ DEBUG shouldStopConsuming] RETURNING FALSE: all checks passed, continue consuming");
-        if ($this->logger) {
-            $this->logger->debug("shouldStopConsuming: returning false (continue)", [
-                'queue' => $this->attributes['name']
-            ]);
         }
         
         return false;
@@ -700,15 +546,6 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
      */
     protected function setupConsumer(int $messages, int $seconds, int $maxMemory)
     {
-        if ($this->logger) {
-            $this->logger->debug("setupConsumer called", [
-                'queue' => $this->attributes['name'],
-                'messages' => $messages,
-                'seconds' => $seconds,
-                'maxMemory' => $maxMemory
-            ]);
-        }
-        
         try {
             $this->limitMessageCount = $messages;
             $this->limitSecondsUptime = $seconds;
@@ -727,32 +564,15 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                 ]);
             }
 
-            rmq_log("[RMQ setupConsumer] Calling setupChannelConsumer()...");
             $this->setupChannelConsumer();
-            rmq_log("[RMQ setupConsumer] setupChannelConsumer() completed");
-            
-            if ($this->logger) {
-                $this->logger->debug("setupChannelConsumer completed");
-            }
-            
-            rmq_log("[RMQ setupConsumer] Calling registerShutdownHandler()...");
             $this->registerShutdownHandler();
-            rmq_log("[RMQ setupConsumer] registerShutdownHandler() completed");
-            
-            rmq_log("[RMQ setupConsumer] Calling handleKillSignals()...");
             $this->handleKillSignals();
-            rmq_log("[RMQ setupConsumer] handleKillSignals() completed");
-            
-            rmq_log("[RMQ setupConsumer] EXIT: success");
         } catch (\Throwable $e) {
             rmq_log(sprintf(
-                "[RMQ setupConsumer] EXCEPTION: %s - %s in %s:%d",
+                "[RMQ] ERROR in setupConsumer: %s - %s",
                 get_class($e),
-                $e->getMessage(),
-                $e->getFile(),
-                $e->getLine()
+                $e->getMessage()
             ));
-            rmq_log(sprintf("[RMQ setupConsumer] Stack trace: %s", $e->getTraceAsString()));
             
             if ($this->logger) {
                 $this->logger->error("Error in setupConsumer", [
@@ -770,42 +590,16 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
 
     private function setupChannelConsumer()
     {
-        rmq_log(sprintf(
-            "[RMQ setupChannelConsumer] ENTRY: queue=%s, auto_create=%s",
-            $this->attributes['name'],
-            $this->attributes['auto_create'] ? 'true' : 'false'
-        ));
-        
         try {
             if ($this->attributes['auto_create'] === true) {
-                rmq_log("[RMQ setupChannelConsumer] auto_create=true, calling create()...");
                 $this->create();
-                rmq_log("[RMQ setupChannelConsumer] create() completed");
-                
-                rmq_log("[RMQ setupChannelConsumer] Calling bind()...");
                 $this->bind();
-                rmq_log("[RMQ setupChannelConsumer] bind() completed");
-            } else {
-                rmq_log("[RMQ setupChannelConsumer] auto_create=false, skipping create/bind");
             }
 
-            rmq_log("[RMQ setupChannelConsumer] Getting channel...");
             $channel = $this->getChannel();
-            rmq_log(sprintf(
-                "[RMQ setupChannelConsumer] Channel obtained, setting basic_qos: prefetchCount=%s, globalPrefetch=%s",
-                $this->prefetchCount,
-                $this->globalPrefetch ? 'true' : 'false'
-            ));
-            
             $channel->basic_qos(null, $this->prefetchCount, $this->globalPrefetch);
-            rmq_log("[RMQ setupChannelConsumer] basic_qos completed");
 
             $consumerTag = $this->getConsumerTag();
-            rmq_log(sprintf(
-                "[RMQ setupChannelConsumer] Starting basic_consume: queue=%s, consumer_tag=%s",
-                $this->attributes['name'],
-                $consumerTag
-            ));
 
             if ($this->logger) {
                 $this->logger->debug("Starting basic_consume", [
@@ -827,23 +621,12 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                     'consume'
                 ]
             );
-            
-            rmq_log("[RMQ setupChannelConsumer] basic_consume completed successfully");
-            
-            if ($this->logger) {
-                $this->logger->debug("basic_consume completed successfully");
-            }
-            
-            rmq_log("[RMQ setupChannelConsumer] EXIT: success");
         } catch (\Throwable $e) {
             rmq_log(sprintf(
-                "[RMQ setupChannelConsumer] EXCEPTION: %s - %s in %s:%d",
+                "[RMQ] ERROR in setupChannelConsumer: %s - %s",
                 get_class($e),
-                $e->getMessage(),
-                $e->getFile(),
-                $e->getLine()
+                $e->getMessage()
             ));
-            rmq_log(sprintf("[RMQ setupChannelConsumer] Stack trace: %s", $e->getTraceAsString()));
             
             if ($this->logger) {
                 $this->logger->error("Error in setupChannelConsumer: " . $e->getMessage(), [
@@ -907,50 +690,22 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
      */
     private function getMessageProcessor(): MessageProcessorInterface
     {
-        rmq_log(sprintf(
-            "[RMQ getMessageProcessor] ENTRY: messageProcessor type=%s, is MessageProcessorInterface=%s",
-            is_object($this->messageProcessor) ? get_class($this->messageProcessor) : gettype($this->messageProcessor),
-            ($this->messageProcessor instanceof MessageProcessorInterface) ? 'true' : 'false'
-        ));
-        
         if (!($this->messageProcessor instanceof MessageProcessorInterface)) {
-            rmq_log(sprintf(
-                "[RMQ getMessageProcessor] Creating processor instance from: %s",
-                is_string($this->messageProcessor) ? $this->messageProcessor : gettype($this->messageProcessor)
-            ));
-            
             try {
                 $this->messageProcessor = app($this->messageProcessor);
-                rmq_log(sprintf(
-                    "[RMQ getMessageProcessor] Processor created: %s",
-                    get_class($this->messageProcessor)
-                ));
-                
                 if ($this->messageProcessor instanceof AbstractMessageProcessor) {
-                    rmq_log("[RMQ getMessageProcessor] Setting logger on AbstractMessageProcessor...");
                     $this->messageProcessor->setLogger($this->logger);
-                    rmq_log("[RMQ getMessageProcessor] Logger set");
-                } else {
-                    rmq_log(sprintf(
-                        "[RMQ getMessageProcessor] Processor is not AbstractMessageProcessor, skipping logger set"
-                    ));
                 }
             } catch (\Throwable $e) {
-                rmq_log(sprintf(
-                    "[RMQ getMessageProcessor] EXCEPTION creating processor: %s - %s",
-                    get_class($e),
-                    $e->getMessage()
-                ));
+                if ($this->logger) {
+                    $this->logger->error("Error creating message processor", [
+                        'exception' => get_class($e),
+                        'message' => $e->getMessage()
+                    ]);
+                }
                 throw $e;
             }
-        } else {
-            rmq_log("[RMQ getMessageProcessor] Using existing processor instance");
         }
-        
-        rmq_log(sprintf(
-            "[RMQ getMessageProcessor] EXIT: returning %s",
-            get_class($this->messageProcessor)
-        ));
         
         return $this->messageProcessor;
     }
@@ -961,35 +716,38 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
      */
     public function consume(AMQPMessage $message)
     {
-        rmq_log(sprintf(
-            "[RMQ consume] ENTRY: queue=%s, message_size=%d bytes",
-            $this->attributes['name'],
-            strlen($message->getBody())
-        ));
+        // Get routing info from delivery info
+        $deliveryInfo = $message->getDeliveryInfo();
+        $routingKey = $deliveryInfo['routing_key'] ?? 'unknown';
+        $exchange = $deliveryInfo['exchange'] ?? 'unknown';
+        $from = $exchange . ':' . $routingKey;
         
         try {
-            rmq_log("[RMQ consume] Getting message processor...");
             $processor = $this->getMessageProcessor();
-            rmq_log(sprintf("[RMQ consume] Message processor obtained: %s", get_class($processor)));
-            
-            rmq_log("[RMQ consume] Calling processor->consume()...");
             $processor->consume($message);
-            rmq_log("[RMQ consume] processor->consume() completed successfully");
+            
+            rmq_log(sprintf(
+                "[RMQ] Message processed: queue=%s, from=%s, size=%d bytes",
+                $this->attributes['name'],
+                $from,
+                strlen($message->getBody())
+            ));
             
             if ($this->logger) {
-                $this->logger->debug("Consumed message", ['message' => $message->getBody()]);
+                $this->logger->debug("Consumed message", [
+                    'queue' => $this->attributes['name'],
+                    'from' => $from,
+                    'message' => $message->getBody()
+                ]);
             }
-            
-            rmq_log("[RMQ consume] EXIT: success");
         } catch (\Throwable $e) {
             rmq_log(sprintf(
-                "[RMQ consume] EXCEPTION: %s - %s in %s:%d",
+                "[RMQ] ERROR processing message: queue=%s, from=%s, error=%s - %s",
+                $this->attributes['name'],
+                $from,
                 get_class($e),
-                $e->getMessage(),
-                $e->getFile(),
-                $e->getLine()
+                $e->getMessage()
             ));
-            rmq_log(sprintf("[RMQ consume] Stack trace: %s", $e->getTraceAsString()));
             
             if ($this->logger) {
                 $this->logger->notice(
