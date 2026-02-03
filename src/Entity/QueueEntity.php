@@ -6,11 +6,12 @@ namespace NeedleProject\LaravelRabbitMq\Entity;
 if (!function_exists('rmq_log')) {
     function rmq_log(string $message) {
         // Use fwrite to stderr for guaranteed console output
+        // In tests, STDERR might not be available, so we check first
         if (defined('STDERR') && is_resource(STDERR)) {
             @fwrite(STDERR, $message . PHP_EOL);
-        } else {
-            // Fallback to error_log if STDERR is not available
-            error_log($message);
+        } elseif (function_exists('error_log')) {
+            // Fallback to error_log if STDERR is not available (e.g., in tests)
+            @error_log($message);
         }
     }
 }

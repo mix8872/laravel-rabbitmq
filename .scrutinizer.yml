@@ -8,4 +8,4 @@ build:
           - php-scrutinizer-run --enable-security-analysis
   environment:
     php:
-      version: 8.3.0
+      version: 8.1.1
