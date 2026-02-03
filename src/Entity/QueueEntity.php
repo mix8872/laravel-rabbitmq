@@ -337,20 +337,81 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
      */
     public function startConsuming(int $messages, int $seconds, int $maxMemory)
     {
+        if ($this->logger) {
+            $this->logger->info("startConsuming called", [
+                'queue' => $this->attributes['name'],
+                'messages' => $messages,
+                'seconds' => $seconds,
+                'maxMemory' => $maxMemory
+            ]);
+        }
+        
         $this->setupConsumer($messages, $seconds, $maxMemory);
+        
+        if ($this->logger) {
+            $this->logger->info("setupConsumer completed, entering main loop", [
+                'queue' => $this->attributes['name'],
+                'limitMessageCount' => $this->limitMessageCount,
+                'limitSecondsUptime' => $this->limitSecondsUptime,
+                'limitMemoryConsumption' => $this->limitMemoryConsumption
+            ]);
+        }
+        
         while (false === $this->shouldStopConsuming()) {
             try {
+                if ($this->logger) {
+                    $this->logger->debug("Calling wait()", [
+                        'queue' => $this->attributes['name'],
+                        'seconds' => $seconds
+                    ]);
+                }
+                
                 $this->getChannel()->wait(null, false, $seconds);
+                
+                if ($this->logger) {
+                    $this->logger->debug("wait() returned", [
+                        'queue' => $this->attributes['name']
+                    ]);
+                }
             } catch (AMQPTimeoutException $e) {
+                if ($this->logger) {
+                    $this->logger->debug("AMQPTimeoutException caught", [
+                        'queue' => $this->attributes['name'],
+                        'message' => $e->getMessage()
+                    ]);
+                }
+                
                 if ($this->shouldStopConsuming()) {
+                    if ($this->logger) {
+                        $this->logger->info("shouldStopConsuming returned true, breaking loop");
+                    }
                     break;
                 }
+                
+                if ($this->logger) {
+                    $this->logger->debug("Reconnecting after timeout", [
+                        'queue' => $this->attributes['name'],
+                        'retry_timeout' => $this->retryTimeout
+                    ]);
+                }
+                
                 // Convert seconds to microseconds for usleep
                 usleep((int)($this->retryTimeout * 1000000));
                 $this->getConnection()->reconnect();
                 $this->setupChannelConsumer();
             } catch (\Throwable $e) {
                 // stop the consumer
+                if ($this->logger) {
+                    $this->logger->error("Exception in consumer loop", [
+                        'queue' => $this->attributes['name'],
+                        'exception' => get_class($e),
+                        'message' => $e->getMessage(),
+                        'file' => $e->getFile(),
+                        'line' => $e->getLine(),
+                        'trace' => $e->getTraceAsString()
+                    ]);
+                }
+                
                 $this->stopConsuming();
                 $this->logger->notice(sprintf(
                     "Stopped consuming: %s in %s:%d",
@@ -361,6 +422,13 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                 return 1;
             }
         }
+        
+        if ($this->logger) {
+            $this->logger->info("Consumer loop finished", [
+                'queue' => $this->attributes['name']
+            ]);
+        }
+        
         return 0;
     }
 
@@ -369,34 +437,47 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
      */
     protected function shouldStopConsuming(): bool
     {
-        if ($this->limitSecondsUptime >0 && (microtime(true) - $this->startTime) > $this->limitSecondsUptime) {
-            $this->logger->debug(
-                "Stopped consumer",
-                [
-                    'limit' => 'time_limit',
-                    'value' => sprintf("%.2f", microtime(true) - $this->startTime)
-                ]
-            );
+        $currentTime = microtime(true);
+        $elapsedTime = $currentTime - $this->startTime;
+        
+        if ($this->limitSecondsUptime >0 && $elapsedTime > $this->limitSecondsUptime) {
+            if ($this->logger) {
+                $this->logger->debug("shouldStopConsuming: time limit reached", [
+                    'queue' => $this->attributes['name'],
+                    'limitSecondsUptime' => $this->limitSecondsUptime,
+                    'elapsedTime' => sprintf("%.2f", $elapsedTime)
+                ]);
+            }
             return true;
         }
-        if (memory_get_peak_usage(true) >= ($this->limitMemoryConsumption * 1048576)) {
-            $this->logger->debug(
-                "Stopped consumer",
-                [
-                    'limit' => 'memory_limit',
-                    'value' => (int)round(memory_get_peak_usage(true) / 1048576, 2)
-                ]
-            );
+        
+        $currentMemory = memory_get_peak_usage(true);
+        $memoryLimit = $this->limitMemoryConsumption * 1048576;
+        if ($currentMemory >= $memoryLimit) {
+            if ($this->logger) {
+                $this->logger->debug("shouldStopConsuming: memory limit reached", [
+                    'queue' => $this->attributes['name'],
+                    'limitMemoryConsumption' => $this->limitMemoryConsumption,
+                    'currentMemory' => (int)round($currentMemory / 1048576, 2)
+                ]);
+            }
             return true;
         }
 
-        if ($this->limitMessageCount > 0 && $this->getMessageProcessor()->getProcessedMessages() >= $this->limitMessageCount) {
-            $this->logger->debug(
-                "Stopped consumer",
-                ['limit' => 'message_count', 'value' => (int)$this->getMessageProcessor()->getProcessedMessages()]
-            );
-            return true;
+        if ($this->limitMessageCount > 0) {
+            $processedMessages = $this->getMessageProcessor()->getProcessedMessages();
+            if ($processedMessages >= $this->limitMessageCount) {
+                if ($this->logger) {
+                    $this->logger->debug("shouldStopConsuming: message count limit reached", [
+                        'queue' => $this->attributes['name'],
+                        'limitMessageCount' => $this->limitMessageCount,
+                        'processedMessages' => $processedMessages
+                    ]);
+                }
+                return true;
+            }
         }
+        
         return false;
     }
 
@@ -421,13 +502,50 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
      */
     protected function setupConsumer(int $messages, int $seconds, int $maxMemory)
     {
-        $this->limitMessageCount = $messages;
-        $this->limitSecondsUptime = $seconds;
-        $this->limitMemoryConsumption = $maxMemory;
+        if ($this->logger) {
+            $this->logger->debug("setupConsumer called", [
+                'queue' => $this->attributes['name'],
+                'messages' => $messages,
+                'seconds' => $seconds,
+                'maxMemory' => $maxMemory
+            ]);
+        }
+        
+        try {
+            $this->limitMessageCount = $messages;
+            $this->limitSecondsUptime = $seconds;
+            $this->limitMemoryConsumption = $maxMemory;
 
-        $this->startTime = microtime(true);
+            $this->startTime = microtime(true);
 
-        $this->setupChannelConsumer();
+            if ($this->logger) {
+                $this->logger->debug("Limits set", [
+                    'queue' => $this->attributes['name'],
+                    'limitMessageCount' => $this->limitMessageCount,
+                    'limitSecondsUptime' => $this->limitSecondsUptime,
+                    'limitMemoryConsumption' => $this->limitMemoryConsumption,
+                    'startTime' => $this->startTime
+                ]);
+            }
+
+            $this->setupChannelConsumer();
+            
+            if ($this->logger) {
+                $this->logger->debug("setupChannelConsumer completed");
+            }
+        } catch (\Throwable $e) {
+            if ($this->logger) {
+                $this->logger->error("Error in setupConsumer", [
+                    'queue' => $this->attributes['name'],
+                    'exception' => get_class($e),
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                    'trace' => $e->getTraceAsString()
+                ]);
+            }
+            throw $e;
+        }
 
         $this->registerShutdownHandler();
         $this->handleKillSignals();
@@ -435,16 +553,24 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
 
     private function setupChannelConsumer()
     {
-        if ($this->attributes['auto_create'] === true) {
-            $this->create();
-            $this->bind();
-        }
+        try {
+            if ($this->attributes['auto_create'] === true) {
+                $this->create();
+                $this->bind();
+            }
 
-        $this->getChannel()
-             ->basic_qos(null, $this->prefetchCount, $this->globalPrefetch);
+            $channel = $this->getChannel();
+            $channel->basic_qos(null, $this->prefetchCount, $this->globalPrefetch);
 
-        $this->getChannel()
-            ->basic_consume(
+            if ($this->logger) {
+                $this->logger->debug("Starting basic_consume", [
+                    'queue' => $this->attributes['name'],
+                    'consumer_tag' => $this->getConsumerTag(),
+                    'prefetch_count' => $this->prefetchCount
+                ]);
+            }
+
+            $channel->basic_consume(
                 $this->attributes['name'],
                 $this->getConsumerTag(),
                 false,
@@ -456,6 +582,19 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                     'consume'
                 ]
             );
+            
+            if ($this->logger) {
+                $this->logger->debug("basic_consume completed successfully");
+            }
+        } catch (\Throwable $e) {
+            if ($this->logger) {
+                $this->logger->error("Error in setupChannelConsumer: " . $e->getMessage(), [
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine()
+                ]);
+            }
+            throw $e;
+        }
     }
 
     /**
