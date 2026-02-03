@@ -359,6 +359,17 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
         
         // Check shouldStopConsuming before entering loop
         $shouldStop = $this->shouldStopConsuming();
+        
+        // Always log to error_log for debugging (works even if logger is not set)
+        error_log(sprintf(
+            "[RMQ DEBUG] First shouldStopConsuming check: shouldStop=%s, limitMessageCount=%s, limitSecondsUptime=%s, limitMemoryConsumption=%s, startTime=%s",
+            $shouldStop ? 'true' : 'false',
+            $this->limitMessageCount,
+            $this->limitSecondsUptime,
+            $this->limitMemoryConsumption,
+            $this->startTime
+        ));
+        
         if ($this->logger) {
             $this->logger->info("First shouldStopConsuming check", [
                 'queue' => $this->attributes['name'],
@@ -368,6 +379,15 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                 'limitMemoryConsumption' => $this->limitMemoryConsumption,
                 'startTime' => $this->startTime
             ]);
+        }
+        
+        if ($shouldStop) {
+            error_log("[RMQ DEBUG] shouldStopConsuming returned true immediately, exiting loop without entering");
+            if ($this->logger) {
+                $this->logger->warning("shouldStopConsuming returned true before entering loop", [
+                    'queue' => $this->attributes['name']
+                ]);
+            }
         }
         
         while (false === $this->shouldStopConsuming()) {

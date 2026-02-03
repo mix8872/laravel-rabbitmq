@@ -70,6 +70,42 @@ class BaseConsumerCommand extends Command
             }
             
             $this->info("Starting to consume messages...");
+            
+            // Add debug output if consumer supports reflection
+            if ($consumer instanceof LoggerAwareInterface) {
+                try {
+                    $reflection = new \ReflectionClass($consumer);
+                    if ($reflection->hasMethod('shouldStopConsuming')) {
+                        $method = $reflection->getMethod('shouldStopConsuming');
+                        $method->setAccessible(true);
+                        $shouldStop = $method->invoke($consumer);
+                        $this->line("DEBUG: First shouldStopConsuming() check = " . ($shouldStop ? 'true (WILL STOP)' : 'false (WILL CONTINUE)'));
+                        
+                        // Try to get limit values
+                        if ($reflection->hasProperty('limitMessageCount')) {
+                            $prop = $reflection->getProperty('limitMessageCount');
+                            $prop->setAccessible(true);
+                            $limitMsg = $prop->getValue($consumer);
+                            $this->line("DEBUG: limitMessageCount = {$limitMsg}");
+                        }
+                        if ($reflection->hasProperty('limitSecondsUptime')) {
+                            $prop = $reflection->getProperty('limitSecondsUptime');
+                            $prop->setAccessible(true);
+                            $limitTime = $prop->getValue($consumer);
+                            $this->line("DEBUG: limitSecondsUptime = {$limitTime}");
+                        }
+                        if ($reflection->hasProperty('startTime')) {
+                            $prop = $reflection->getProperty('startTime');
+                            $prop->setAccessible(true);
+                            $startTime = $prop->getValue($consumer);
+                            $this->line("DEBUG: startTime = {$startTime}");
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    $this->line("DEBUG: Could not inspect consumer: " . $e->getMessage());
+                }
+            }
+            
             $result = $consumer->startConsuming($messageCount, $waitTime, $memoryLimit);
             $this->info("Consumer finished with code: {$result}");
             return $result;
