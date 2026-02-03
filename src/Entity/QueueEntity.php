@@ -357,6 +357,19 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
             ]);
         }
         
+        // Check shouldStopConsuming before entering loop
+        $shouldStop = $this->shouldStopConsuming();
+        if ($this->logger) {
+            $this->logger->info("First shouldStopConsuming check", [
+                'queue' => $this->attributes['name'],
+                'shouldStop' => $shouldStop,
+                'limitMessageCount' => $this->limitMessageCount,
+                'limitSecondsUptime' => $this->limitSecondsUptime,
+                'limitMemoryConsumption' => $this->limitMemoryConsumption,
+                'startTime' => $this->startTime
+            ]);
+        }
+        
         while (false === $this->shouldStopConsuming()) {
             try {
                 if ($this->logger) {
@@ -438,9 +451,23 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
     protected function shouldStopConsuming(): bool
     {
         $currentTime = microtime(true);
-        $elapsedTime = $currentTime - $this->startTime;
+        $elapsedTime = $this->startTime > 0 ? ($currentTime - $this->startTime) : 0;
         
-        if ($this->limitSecondsUptime >0 && $elapsedTime > $this->limitSecondsUptime) {
+        // Log every check for debugging
+        if ($this->logger) {
+            $this->logger->debug("shouldStopConsuming check", [
+                'queue' => $this->attributes['name'],
+                'limitSecondsUptime' => $this->limitSecondsUptime,
+                'limitMessageCount' => $this->limitMessageCount,
+                'limitMemoryConsumption' => $this->limitMemoryConsumption,
+                'startTime' => $this->startTime,
+                'currentTime' => $currentTime,
+                'elapsedTime' => $elapsedTime
+            ]);
+        }
+        
+        // Check time limit
+        if ($this->limitSecondsUptime > 0 && $elapsedTime > $this->limitSecondsUptime) {
             if ($this->logger) {
                 $this->logger->debug("shouldStopConsuming: time limit reached", [
                     'queue' => $this->attributes['name'],
@@ -451,6 +478,7 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
             return true;
         }
         
+        // Check memory limit
         $currentMemory = memory_get_peak_usage(true);
         $memoryLimit = $this->limitMemoryConsumption * 1048576;
         if ($currentMemory >= $memoryLimit) {
@@ -458,24 +486,42 @@ class QueueEntity implements PublisherInterface, ConsumerInterface, AMQPEntityIn
                 $this->logger->debug("shouldStopConsuming: memory limit reached", [
                     'queue' => $this->attributes['name'],
                     'limitMemoryConsumption' => $this->limitMemoryConsumption,
-                    'currentMemory' => (int)round($currentMemory / 1048576, 2)
+                    'currentMemory' => (int)round($currentMemory / 1048576, 2),
+                    'memoryLimit' => (int)round($memoryLimit / 1048576, 2)
                 ]);
             }
             return true;
         }
 
+        // Check message count limit
         if ($this->limitMessageCount > 0) {
-            $processedMessages = $this->getMessageProcessor()->getProcessedMessages();
-            if ($processedMessages >= $this->limitMessageCount) {
+            try {
+                $processedMessages = $this->getMessageProcessor()->getProcessedMessages();
+                if ($processedMessages >= $this->limitMessageCount) {
+                    if ($this->logger) {
+                        $this->logger->debug("shouldStopConsuming: message count limit reached", [
+                            'queue' => $this->attributes['name'],
+                            'limitMessageCount' => $this->limitMessageCount,
+                            'processedMessages' => $processedMessages
+                        ]);
+                    }
+                    return true;
+                }
+            } catch (\Throwable $e) {
                 if ($this->logger) {
-                    $this->logger->debug("shouldStopConsuming: message count limit reached", [
+                    $this->logger->error("Error getting processed messages count", [
                         'queue' => $this->attributes['name'],
-                        'limitMessageCount' => $this->limitMessageCount,
-                        'processedMessages' => $processedMessages
+                        'exception' => get_class($e),
+                        'message' => $e->getMessage()
                     ]);
                 }
-                return true;
             }
+        }
+        
+        if ($this->logger) {
+            $this->logger->debug("shouldStopConsuming: returning false (continue)", [
+                'queue' => $this->attributes['name']
+            ]);
         }
         
         return false;
