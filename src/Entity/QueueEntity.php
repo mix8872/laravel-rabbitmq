@@ -2,12 +2,14 @@
 
 namespace NeedleProject\LaravelRabbitMq\Entity;
 
-// Helper function for guaranteed console output
+// Helper function for guaranteed console output (global namespace)
 if (!function_exists('rmq_log')) {
     function rmq_log(string $message) {
         // Use both error_log and fwrite for guaranteed console output
-        rmq_log($message);
-        @fwrite(STDERR, $message . PHP_EOL);
+        error_log($message);
+        if (defined('STDERR') && is_resource(STDERR)) {
+            @fwrite(STDERR, $message . PHP_EOL);
+        }
     }
 }
 

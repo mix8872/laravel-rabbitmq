@@ -1,6 +1,17 @@
 <?php
 namespace NeedleProject\LaravelRabbitMq\Command;
 
+// Helper function for guaranteed console output (global namespace)
+if (!function_exists('rmq_log')) {
+    function rmq_log(string $message) {
+        // Use both error_log and fwrite for guaranteed console output
+        error_log($message);
+        if (defined('STDERR') && is_resource(STDERR)) {
+            @fwrite(STDERR, $message . PHP_EOL);
+        }
+    }
+}
+
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use Monolog\Handler\StreamHandler;
